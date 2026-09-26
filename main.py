@@ -25,7 +25,7 @@ was_blinking = False
 last_x = screen_width // 2
 last_y = screen_height // 2
 
-dead_zone = 20
+dead_zone = 30
 
 while True:
     success, frame = camera.read()
