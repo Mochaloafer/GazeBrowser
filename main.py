@@ -52,6 +52,9 @@ while True:
             x = int(x)
             y = int(y)
 
+            x = max(0, min(x, screen_width - 1))
+            y = max(0, min(y, screen_height - 1))
+
             distance = ((x - last_x) ** 2 + (y - last_y) ** 2) ** 0.5
 
             if distance > DEAD_ZONE:
