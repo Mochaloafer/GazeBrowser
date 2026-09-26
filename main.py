@@ -9,23 +9,25 @@ run_9_point_calibration(tracker)
 # Start camera
 camera = cv2.VideoCapture(0)
 
-while True:
-    success, frame = camera.read()
+try:
+    while True:
+        success, frame = camera.read()
 
-    if not success:
-        break
+        if not success:
+            break
 
-    features, blink = tracker.extract_features(frame)
+        features, blink = tracker.extract_features(frame)
 
-    if features is not None and not blink:
-        x, y = tracker.predict([features])[0]
-        print("Looking at:", int(x), int(y))
+        if features is not None and not blink:
+            x, y = tracker.predict([features])[0]
+            print("Looking at:", int(x), int(y))
 
-    cv2.imshow("Eye Tracker", frame)
+        cv2.imshow("Eye Tracker", frame)
 
-    # Press Q to quit
-    if cv2.waitKey(1) & 0xFF == ord("q"):
-        break
+        # Press Q to quit
+        if cv2.waitKey(1) & 0xFF == ord("q"):
+            break
 
-camera.release()
-cv2.destroyAllWindows()
+finally:
+    camera.release()
+    cv2.destroyAllWindows()
