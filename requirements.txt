@@ -1,1 +1,3 @@
-eyetrax
+eyetrax==0.4.0
+opencv-python
+pyautogui
