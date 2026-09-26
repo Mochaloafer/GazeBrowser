@@ -1,1 +1,4 @@
-eyetrax/
+.venv/
+venv/
+ENV/
+env/
