@@ -23,7 +23,7 @@ class AssistantWindow(QWidget):
         self.allow_close = False
         self.drag_offset = None
 
-        self.setWindowTitle("GazeBrowser")
+        self.setWindowTitle("Bog - GazeBrowser")
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint
             | Qt.WindowType.WindowStaysOnTopHint
@@ -54,7 +54,7 @@ class AssistantWindow(QWidget):
         layout.setContentsMargins(20, 12, 20, 14)
 
         header = QHBoxLayout()
-        title = QLabel("GAZEBROWSER")
+        title = QLabel("BOG")
         title.setAttribute(
             Qt.WidgetAttribute.WA_TransparentForMouseEvents
         )
@@ -127,9 +127,9 @@ class AssistantWindow(QWidget):
 
         elif mode == "typing":
             labels = [
-                "Assistant submit", "Assistant stop typing",
-                "Assistant return", "Assistant delete",
-                "Assistant clear field", "",
+                "Hey submit", "Hey stop typing",
+                "Hey return", "Hey delete",
+                "Hey clear field", "",
             ]
 
         else:

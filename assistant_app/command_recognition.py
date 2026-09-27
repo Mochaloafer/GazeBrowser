@@ -11,6 +11,7 @@ COMMAND_ALIASES = {
     "click": {
         "click", "ick", "lick", "plick", "klick",
         "tick", "kick", "quit", "kit", "clique",
+        "quick", "link"
     },
     "open": {
         "open", "bin", "oben", "oven", "odin",
@@ -40,8 +41,8 @@ COMMAND_ALIASES = {
 
 
 def normalize_phrase(text):
-    """Ignore capitalization, punctuation, and extra spaces."""
-    text = re.sub(r"[^\w\s]", "", text.casefold())
+    """Treat punctuation as spaces, then normalize whitespace."""
+    text = re.sub(r"[^\w\s]", " ", text.casefold())
     return " ".join(text.split())
 
 

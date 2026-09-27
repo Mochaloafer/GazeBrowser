@@ -1,58 +1,13 @@
 import ctypes
 import math
-import re
 import time
 
 import pyautogui
 from PySide6.QtCore import QObject, QTimer
 from PySide6.QtWidgets import QApplication
 
-from .command_recognition import recognize_command
 from .desktop import DesktopActions, foreground_window
-
-
-def parse_transcript(text, mode):
-    """Convert finalized speech into an action and optional text."""
-    text = text.strip()
-
-    if mode == "command":
-        return recognize_command(text), ""
-
-    # Clearing is accepted only as a standalone phrase.
-    normalized = " ".join(
-        text.lower().strip(" .!?,;:").split()
-    )
-
-    if normalized == "assistant clear field":
-        return "clear_field", ""
-
-    # Reserved typing commands must finish the utterance.
-    match = re.search(
-        r"\bassistant\s+(submit|stop\s+typing|return|delete)"
-        r"[.!?,;:]*\s*$",
-        text,
-        re.IGNORECASE,
-    )
-
-    if match:
-        phrase = " ".join(match.group(1).lower().split())
-
-        action = {
-            "submit": "submit",
-            "stop typing": "finish_typing",
-            "return": "back",
-            "delete": "delete",
-        }[phrase]
-
-        prefix = text[:match.start()].rstrip(" ,;:")
-        return action, prefix
-
-    # Avoid inserting an incomplete assistant command as dictation.
-    if re.search(r"\bassistant\b", text, re.IGNORECASE):
-        return "unclear", ""
-
-    return "dictate", text
-
+from .transcript_parser import parse_transcript
 
 class AssistantController(QObject):
     def __init__(self, window, speech, focus_worker, gaze=None):
