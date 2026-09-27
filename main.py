@@ -146,16 +146,17 @@ while True:
         text = recognizer.recognize_google(audio)
 
         if text == "stop":
-            print("stop")
             break
-
-        if text == "back":
+        elif text == "backspace":
             pyautogui.press("backspace")
-
-        if text == "enter":
+        elif text == "enter":
             pyautogui.press("enter")
-
-        pyautogui.write(text + " ")
+        elif text == "period":
+            pyautogui.write(".")
+        elif text == "comma":
+            pyautogui.write(",")
+        else:
+            pyautogui.write(text + " ")
 
     except:
         pass
