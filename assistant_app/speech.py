@@ -25,6 +25,7 @@ class SpeechWorker(QThread):
     partial = Signal(int, str)
     final = Signal(int, str, float)
     failed = Signal(str)
+    ended = Signal(int)
 
     def __init__(self, model_name="base.en"):
         super().__init__()
@@ -148,13 +149,18 @@ class SpeechWorker(QThread):
                 )
 
                 if phrase_finished:
-                    if voiced_frames >= 5:
-                        text = transcribe()
+                    try:
+                        if voiced_frames >= 5:
+                            text = transcribe()
 
-                        if not self.stop_event.is_set():
-                            self.final.emit(
-                                phrase_id, text, last_voice_time
-                            )
+                            if not self.stop_event.is_set():
+                                self.final.emit(
+                                    phrase_id,
+                                    text,
+                                    last_voice_time,
+                                )
+                    finally:
+                        self.ended.emit(phrase_id)
 
                     active = False
                     chunks = []

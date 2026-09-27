@@ -74,6 +74,9 @@ class AssistantController(QObject):
         # Results from an older state must not trigger actions.
         self.epoch = 0
         self.phrases = {}
+        self.held_phrase = None
+        self.held_position = None
+        self.hold_deadline = 0.0
 
         self.gaze_valid = False
         self.last_gaze_time = 0.0
@@ -88,6 +91,7 @@ class AssistantController(QObject):
         speech.final.connect(self.final)
         speech.status.connect(window.notice.setText)
         speech.failed.connect(self.failure)
+        speech.ended.connect(self.release_cursor)
 
         # Focus notifications.
         focus_worker.updated.connect(self.focus_changed)
@@ -120,6 +124,16 @@ class AssistantController(QObject):
         ]
 
     def tick(self):
+        if (self.held_phrase is not None and time.monotonic() >= self.hold_deadline):
+            expired_phrase = self.held_phrase
+
+            # Prevent a late result from executing after timeout.
+            self.phrases.pop(expired_phrase, None)
+            self.release_cursor()
+
+            self.window.notice.setText(
+                "Target hold timed out — repeat the command"
+            )
         for key, action in (
             (0x77, self.toggle_pause),  # F8
             (0x79, self.shutdown),      # F10
@@ -193,6 +207,7 @@ class AssistantController(QObject):
         if self.closing:
             return
 
+        self.release_cursor()
         self.paused = not self.paused
         self.epoch += 1
 
@@ -201,11 +216,34 @@ class AssistantController(QObject):
             "Say resume or press F8" if self.paused else "Resumed"
         )
 
+    def hold_cursor(self, phrase_id):
+        """Remember the target and suspend gaze-driven movement."""
+        self.release_cursor()
+
+        self.held_phrase = phrase_id
+        self.held_position = tuple(pyautogui.position())
+        self.hold_deadline = time.monotonic() + 10.0
+
+        self.window.notice.setText(
+            "Target held — recognizing command…"
+        )
+
+    def release_cursor(self, phrase_id=None):
+        """Release only the matching phrase, or release unconditionally."""
+        if (
+            phrase_id is not None
+            and phrase_id != self.held_phrase
+        ):
+            return
+
+        self.held_phrase = None
+        self.held_position = None
+        self.hold_deadline = 0.0
+
     def begin_phrase(self, phrase_id):
         if self.closing:
             return
 
-        # Discard old contexts, including short discarded utterances.
         self.phrases = {
             key: value
             for key, value in self.phrases.items()
@@ -217,6 +255,9 @@ class AssistantController(QObject):
             "command" if self.paused else self.mode,
             dict(self.focus) if self.focus else None,
         )
+
+        if self.mode == "command" and not self.paused:
+            self.hold_cursor(phrase_id)
 
     def partial(self, phrase_id, text):
         context = self.phrases.get(phrase_id)
@@ -244,6 +285,14 @@ class AssistantController(QObject):
         )
 
     def final(self, phrase_id, text, last_voice_time):
+        try:
+            self.process_final(
+                phrase_id, text, last_voice_time
+            )
+        finally:
+            self.release_cursor(phrase_id)
+
+    def process_final(self, phrase_id, text, last_voice_time):
         context = self.phrases.pop(phrase_id, None)
 
         if self.closing or context is None:
@@ -305,6 +354,15 @@ class AssistantController(QObject):
                 self.set_mode("typing")
 
             elif action in ("click", "open"):
+                if (
+                    self.held_phrase != phrase_id
+                    or self.held_position is None
+                ):
+                    self.window.notice.setText(
+                        "Target hold expired — repeat the command"
+                    )
+                    return
+
                 if self.gaze is not None and (
                     not self.gaze_valid
                     or time.monotonic() - self.last_gaze_time > 0.6
@@ -314,13 +372,13 @@ class AssistantController(QObject):
                     )
                     return
 
-                if action == "click":
-                    self.actions.click()
-                else:
-                    self.actions.open_target()
+                x, y = self.held_position
 
-                # Detect typing again even when clicking the same
-                # search field after submitting or stopping typing.
+                if action == "click":
+                    self.actions.click_at(x, y)
+                else:
+                    self.actions.open_at(x, y)
+
                 self.override = None
 
             elif action == "enter":
@@ -402,6 +460,7 @@ class AssistantController(QObject):
         if (
             self.closing
             or self.paused
+            or self.held_phrase is not None
             or not self.gaze_valid
             or time.monotonic() - timestamp > 0.3
         ):
@@ -430,6 +489,7 @@ class AssistantController(QObject):
                 self.failure(f"Mouse: {error}")
 
     def failure(self, message):
+        self.release_cursor()
         self.gaze_valid = False
 
         if not self.paused:
@@ -444,6 +504,7 @@ class AssistantController(QObject):
             return
 
         self.closing = True
+        self.release_cursor()
         self.epoch += 1
 
         self.window.notice.setText(

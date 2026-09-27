@@ -109,6 +109,16 @@ class DesktopActions:
     def click(self):
         pyautogui.click()
 
+    def click_at(self, x, y):
+        pyautogui.click(x=x, y=y)
+
+    def open_at(self, x, y):
+        pyautogui.doubleClick(
+            x=x,
+            y=y,
+            interval=0.15,
+        )
+
     def open_target(self):
         """Double-click at the current pointer position."""
         pyautogui.doubleClick(interval=0.15)
