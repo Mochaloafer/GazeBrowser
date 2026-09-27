@@ -9,7 +9,6 @@ from eyetrax import GazeEstimator, run_9_point_calibration
 # Settings
 SMOOTHING = 0.30
 DEAD_ZONE = 20
-DOUBLE_BLINK_TIME = 2
 
 
 # Setup
@@ -21,12 +20,6 @@ camera = cv2.VideoCapture(0)
 
 cv2.namedWindow("Eye Tracker", cv2.WINDOW_NORMAL)
 cv2.setWindowProperty("Eye Tracker", cv2.WND_PROP_TOPMOST, 1)
-
-
-# Blink tracking
-blink_count = 0
-last_blink_time = 0
-was_blinking = False
 
 
 # Mouse position
@@ -62,6 +55,9 @@ def speech_listener():
                 pyautogui.write(".")
             elif text == "comma":
                 pyautogui.write(",")
+            elif text == "click":
+                print("click")
+                pyautogui.click()
             else:
                 pyautogui.write(text + " ")
 
@@ -106,33 +102,10 @@ while True:
             distance = ((smooth_x - last_x) ** 2 + (smooth_y - last_y) ** 2) ** 0.5
 
             if distance > DEAD_ZONE:
-                pyautogui.moveTo(int(smooth_x), int(smooth_y))
+                #pyautogui.moveTo(int(smooth_x), int(smooth_y))
 
                 last_x = smooth_x
                 last_y = smooth_y
-
-
-        # Detect a new blink
-        if blink and not was_blinking:
-
-            current_time = time.time()
-
-            # Reset blink count if too much time has passed
-            if current_time - last_blink_time > DOUBLE_BLINK_TIME:
-                blink_count = 0
-
-            blink_count += 1
-            last_blink_time = current_time
-
-
-            # Two blinks = left click
-            if blink_count == 2:
-                pyautogui.click()
-                blink_count = 0
-
-
-        # Remember current blink state
-        was_blinking = blink
 
 
     # Show webcam
