@@ -10,13 +10,19 @@ from PySide6.QtCore import QThread, Signal
 
 from speech_input.engine import SpeechEngine
 
+from .audio_config import (
+    MIC_DEVICE,
+    MIN_FRAME_RMS,
+    VAD_AGGRESSIVENESS,
+    DEBUG_AUDIO,
+)
+
 
 SAMPLE_RATE = 16000
 FRAME_MS = 20
 UPDATE_INTERVAL = 0.65
 END_SILENCE = 1.4
 MAX_PHRASE_SECONDS = 20
-MIC_DEVICE = None
 
 def audio_rms(frame):
     samples = frame.astype(np.float32) / 32768.0
@@ -70,7 +76,7 @@ class SpeechWorker(QThread):
             except queue.Full:
                 audio_problem.set()
 
-        vad = webrtcvad.Vad(2)
+        vad = webrtcvad.Vad(VAD_AGGRESSIVENESS)
         pre_roll = deque(maxlen=15)
         recent_voice = deque(maxlen=5)
 
@@ -103,35 +109,14 @@ class SpeechWorker(QThread):
             blocksize=block_size,
             callback=callback,
         ):
-            self.status.emit(
-                "Stay quiet for one second — measuring microphone noise"
-            )
+            speech_threshold = MIN_FRAME_RMS
+            last_audio_log = 0.0
 
-            noise_levels = []
-            calibration_frames = 1000 // FRAME_MS
+            device_info = sd.query_devices(MIC_DEVICE, "input")
+            print(f"[Microphone] device={device_info['name']}")
+            print(f"[Microphone] minimum RMS={speech_threshold:.5f}")
 
-            for _ in range(calibration_frames):
-                if self.stop_event.is_set():
-                    return
-
-                try:
-                    frame, _ = audio_queue.get(timeout=2.0)
-                except queue.Empty:
-                    raise RuntimeError(
-                        "No microphone audio received. Check MIC_DEVICE."
-                    )
-
-                noise_levels.append(audio_rms(frame))
-
-            noise_floor = float(np.percentile(noise_levels, 90))
-
-            # Starting values to test on your microphone.
-            speech_threshold = max(0.002, noise_floor * 3.0)
-
-            print(
-                f"[Microphone] noise={noise_floor:.5f}, "
-                f"speech threshold={speech_threshold:.5f}"
-            )
+            self.status.emit("Listening — pause after each command")
 
             self.status.emit("Listening — pause after each command")
 
@@ -147,12 +132,25 @@ class SpeechWorker(QThread):
                 except queue.Empty:
                     continue
 
-                loud_enough = audio_rms(frame) >= speech_threshold
+                level = audio_rms(frame)
+                vad_speech = vad.is_speech(
+                    frame.tobytes(), SAMPLE_RATE
+                )
 
                 is_speech = (
-                    loud_enough
-                    and vad.is_speech(frame.tobytes(), SAMPLE_RATE)
+                    level >= speech_threshold
+                    and vad_speech
                 )
+
+                now = time.monotonic()
+
+                if DEBUG_AUDIO and now - last_audio_log >= 1.0:
+                    print(
+                        f"[Audio] rms={level:.5f} "
+                        f"vad={vad_speech} "
+                        f"accepted={is_speech}"
+                    )
+                    last_audio_log = now
 
                 if not active:
                     pre_roll.append(frame)

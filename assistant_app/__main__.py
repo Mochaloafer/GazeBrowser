@@ -1,6 +1,7 @@
 import argparse
 import sys
 
+from .audio_permission import ensure_microphone_consent
 
 def run():
     if sys.platform != "win32":
@@ -34,10 +35,19 @@ def run():
     from .window import AssistantWindow
 
     app = QApplication(sys.argv[:1])
+
+    if not ensure_microphone_consent():
+        print("Microphone consent not granted. Exiting.")
+        return 0
+    
     app.setQuitOnLastWindowClosed(False)
 
     window = AssistantWindow()
     speech = SpeechWorker(args.model)
+    speech.failed.connect(
+        lambda message: print(f"[Speech error] {message}")
+    )
+    
     focus = FocusWorker()
     gaze = GazeWorker(tracker) if tracker is not None else None
 
