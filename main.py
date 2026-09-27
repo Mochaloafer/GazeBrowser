@@ -1,6 +1,8 @@
 import cv2
 import pyautogui
 import time
+import speech_recognition as sr
+import threading
 from eyetrax import GazeEstimator, run_9_point_calibration
 
 
@@ -33,6 +35,31 @@ last_y = screen_height // 2
 
 smooth_x = last_x
 smooth_y = last_y
+
+
+recognizer = sr.Recognizer()
+microphone = sr.Microphone()
+
+
+def speech_listener():
+    while True:
+        try:
+            with microphone as source:
+                audio = recognizer.listen(source)
+
+            text = recognizer.recognize_google(audio)
+
+            pyautogui.write(text + " ")
+
+        except:
+            pass
+
+voice_thread = threading.Thread(
+    target=speech_listener,
+    daemon=True
+)
+
+voice_thread.start()
 
 
 while True:
