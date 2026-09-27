@@ -133,10 +133,16 @@ class DesktopActions:
         pyautogui.hotkey("ctrl", "backspace")
 
     def insert(self, text):
-        if text:
-            # Unicode-friendly insertion. Leaves this text on the clipboard.
-            QApplication.clipboard().setText(text + " ")
-            pyautogui.hotkey("ctrl", "v")
+        text = text.strip()
+
+        if not text:
+            return
+
+        QApplication.clipboard().setText(text)
+        pyautogui.hotkey("ctrl", "v")
+
+        # Send the separator separately from the clipboard text.
+        pyautogui.press("space")
 
     def move(self, x, y):
         pyautogui.moveTo(int(x), int(y), _pause=False)

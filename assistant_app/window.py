@@ -127,7 +127,7 @@ class AssistantWindow(QWidget):
 
         elif mode == "typing":
             labels = [
-                "Hey submit", "Hey stop typing",
+                "Hey search", "Hey stop typing",
                 "Hey return", "Hey delete",
                 "Hey clear field", "",
             ]

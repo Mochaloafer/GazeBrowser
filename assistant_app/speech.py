@@ -18,6 +18,9 @@ END_SILENCE = 1.4
 MAX_PHRASE_SECONDS = 20
 MIC_DEVICE = None
 
+def audio_rms(frame):
+    samples = frame.astype(np.float32) / 32768.0
+    return float(np.sqrt(np.mean(samples * samples)))
 
 class SpeechWorker(QThread):
     status = Signal(str)
@@ -31,6 +34,7 @@ class SpeechWorker(QThread):
         super().__init__()
         self.model_name = model_name
         self.stop_event = threading.Event()
+        self.mode = "command"
 
     def stop(self):
         self.stop_event.set()
@@ -46,10 +50,14 @@ class SpeechWorker(QThread):
         except Exception as error:
             self.failed.emit(f"Speech: {error}")
 
+    def set_mode(self, mode):
+        self.mode = mode
+
     def listen(self, engine):
         audio_queue = queue.Queue(maxsize=250)
         audio_problem = threading.Event()
         block_size = SAMPLE_RATE * FRAME_MS // 1000
+        phrase_mode = "command"
 
         def callback(indata, frames, timing, status):
             if status:
@@ -95,6 +103,36 @@ class SpeechWorker(QThread):
             blocksize=block_size,
             callback=callback,
         ):
+            self.status.emit(
+                "Stay quiet for one second — measuring microphone noise"
+            )
+
+            noise_levels = []
+            calibration_frames = 1000 // FRAME_MS
+
+            for _ in range(calibration_frames):
+                if self.stop_event.is_set():
+                    return
+
+                try:
+                    frame, _ = audio_queue.get(timeout=2.0)
+                except queue.Empty:
+                    raise RuntimeError(
+                        "No microphone audio received. Check MIC_DEVICE."
+                    )
+
+                noise_levels.append(audio_rms(frame))
+
+            noise_floor = float(np.percentile(noise_levels, 90))
+
+            # Starting values to test on your microphone.
+            speech_threshold = max(0.002, noise_floor * 3.0)
+
+            print(
+                f"[Microphone] noise={noise_floor:.5f}, "
+                f"speech threshold={speech_threshold:.5f}"
+            )
+
             self.status.emit("Listening — pause after each command")
 
             while not self.stop_event.is_set():
@@ -109,8 +147,11 @@ class SpeechWorker(QThread):
                 except queue.Empty:
                     continue
 
-                is_speech = vad.is_speech(
-                    frame.tobytes(), SAMPLE_RATE
+                loud_enough = audio_rms(frame) >= speech_threshold
+
+                is_speech = (
+                    loud_enough
+                    and vad.is_speech(frame.tobytes(), SAMPLE_RATE)
                 )
 
                 if not active:
@@ -122,6 +163,18 @@ class SpeechWorker(QThread):
 
                     phrase_id += 1
                     active = True
+                    
+                    # Keep one endpoint setting throughout this phrase.
+                    phrase_mode = self.mode
+
+                    silence_seconds = (
+                        0.6 if phrase_mode == "command" else 1.4
+                    )
+
+                    silence_limit = round(
+                        silence_seconds * 1000 / FRAME_MS
+                    )
+
                     chunks = list(pre_roll)
                     pre_roll.clear()
                     recent_voice.clear()
@@ -167,7 +220,8 @@ class SpeechWorker(QThread):
                     continue
 
                 should_preview = (
-                    audio_queue.empty()
+                    phrase_mode == "typing"
+                    and audio_queue.empty()
                     and voiced_frames >= 5
                     and time.monotonic() - last_preview
                     >= UPDATE_INTERVAL

@@ -6,12 +6,12 @@ from .command_recognition import recognize_command
 
 
 WAKE_PHRASES = (
-    ("hey", "piper"),
-    ("assistant",),  # Keep the previous name working.
+    ("hey",),
+    ("assistant",),  # Optional compatibility with the old prefix.
 )
 
 TYPING_COMMANDS = {
-    ("submit",): "submit",
+    ("search",): "search",
     ("stop", "typing"): "finish_typing",
     ("return",): "back",
     ("delete",): "delete",

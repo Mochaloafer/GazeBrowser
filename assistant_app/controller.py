@@ -134,11 +134,18 @@ class AssistantController(QObject):
 
         self.window.set_mode(self.mode, self.paused)
 
+        self.speech.set_mode(
+            "command" if self.paused else self.mode
+        )
+
     def set_mode(self, mode):
         self.mode = mode
         self.override = mode
         self.epoch += 1
         self.window.set_mode(mode, self.paused)
+        self.speech.set_mode(
+            "command" if self.paused else self.mode
+        )
 
     def toggle_mode(self):
         if self.closing or self.paused:
@@ -169,6 +176,10 @@ class AssistantController(QObject):
         self.window.set_mode(self.mode, self.paused)
         self.window.notice.setText(
             "Say resume or press F8" if self.paused else "Resumed"
+        )
+
+        self.speech.set_mode(
+            "command" if self.paused else self.mode
         )
 
     def hold_cursor(self, phrase_id):
@@ -366,10 +377,10 @@ class AssistantController(QObject):
                     # No pending draft: delete from the focused field.
                     self.actions.delete_word()
 
-            elif action in ("dictate", "submit", "finish_typing"):
+            elif action in ("dictate", "search", "finish_typing"):
                 self.actions.insert(prefix)
 
-                if action == "submit":
+                if action == "search":
                     self.actions.enter()
                     self.set_mode("command")
 
