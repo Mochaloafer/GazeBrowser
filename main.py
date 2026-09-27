@@ -5,7 +5,7 @@ import speech_recognition as sr
 import threading
 from eyetrax import GazeEstimator, run_9_point_calibration
 
-
+'''
 # Settings
 SMOOTHING = 0.30
 DEAD_ZONE = 20
@@ -133,3 +133,29 @@ while True:
 # Cleanup
 camera.release()
 cv2.destroyAllWindows()
+'''
+
+recognizer = sr.Recognizer()
+microphone = sr.Microphone()
+
+while True:
+    try:
+        with microphone as source:
+            audio = recognizer.listen(source)
+
+        text = recognizer.recognize_google(audio)
+
+        if text == "stop":
+            print("stop")
+            break
+
+        if text == "back":
+            pyautogui.press("backspace")
+
+        if text == "enter":
+            pyautogui.press("enter")
+
+        pyautogui.write(text + " ")
+
+    except:
+        pass
