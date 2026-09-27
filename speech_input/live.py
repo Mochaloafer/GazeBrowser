@@ -138,7 +138,6 @@ class DictationWindow(QWidget):
             f'<span style="color:#9BACA1;">{tentative}</span>'
         )
 
-
         self.previous_words = words
         self.detail_label.setText(
             f"Last processing pass: {elapsed:.2f}s · "
