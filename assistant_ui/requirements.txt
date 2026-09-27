@@ -1,0 +1,2 @@
+PySide6
+#& .\.venv\Scripts\python.exe -m pip install -r assistant_ui/requirements.txt
