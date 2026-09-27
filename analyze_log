@@ -1,0 +1,104 @@
+"""
+Analyze your eye-tracker learning data.
+
+Usage (in the GazeBrowser folder):
+    python analyze_log.py          # only clicks since your current calibration
+    python analyze_log.py --all    # every click ever logged
+"""
+import csv
+import json
+import sys
+from collections import Counter
+from pathlib import Path
+
+import numpy as np
+
+LOG_FILE = Path("gaze_log.csv")
+LEARN_FILE = Path("gaze_corrections.json")
+MODEL_FILE = Path("gaze_model.pkl")
+CURRENT_SIGMA, CURRENT_PRIOR = 200, 1.0   # match the settings in main.py
+
+try:
+    import pyautogui
+    SW, SH = pyautogui.size()
+except Exception:
+    SW, SH = 1920, 1080
+
+
+def med(values):
+    return f"{np.median(values):.0f}px" if len(values) else "-"
+
+
+# ---------- Load the log ----------
+rows = list(csv.DictReader(LOG_FILE.open()))
+if "--all" not in sys.argv and MODEL_FILE.exists():
+    since = MODEL_FILE.stat().st_mtime
+    rows = [r for r in rows if float(r["time"]) >= since]
+    print(f"Clicks since current calibration: {len(rows)} (use --all for everything)")
+else:
+    print(f"All logged clicks: {len(rows)}")
+
+learned = [r for r in rows if r["learned"] == "True"]
+print(f"Learned: {len(learned)}   Rejected: {len(rows) - len(learned)}")
+for reason, n in Counter(r["reason"] for r in rows if r["learned"] != "True").items():
+    print(f"   {n:4} x {reason}")
+
+# ---------- 1. Is it getting better over time? ----------
+# corrected_err was measured BEFORE that click was learned, so it's an honest test.
+print("\n1) LEARNING CURVE (each row = a quarter of your clicks, oldest first)")
+print(f"{'clicks':>10} {'raw error':>10} {'corrected':>10} {'improvement':>12}")
+chunks = np.array_split(np.arange(len(learned)), 4) if len(learned) >= 8 else []
+for idx in chunks:
+    raw = [float(learned[i]["raw_error_px"]) for i in idx]
+    cor = [float(learned[i]["corrected_error_px"]) for i in idx]
+    gain = (1 - np.median(cor) / np.median(raw)) * 100 if np.median(raw) else 0
+    print(f"{f'{idx[0] + 1}-{idx[-1] + 1}':>10} {med(raw):>10} {med(cor):>10} {gain:>11.0f}%")
+if not chunks:
+    print("   need at least 8 learned clicks")
+
+# ---------- 2. Where on the screen is it good or bad? ----------
+print("\n2) SCREEN REGIONS (median corrected error / number of clicks)")
+names_y, names_x = ["top", "middle", "bottom"], ["left", "center", "right"]
+grid = {}
+for r in rows:
+    gx = min(int(float(r["target_x"]) / SW * 3), 2)
+    gy = min(int(float(r["target_y"]) / SH * 3), 2)
+    grid.setdefault((gy, gx), []).append(r)
+
+print(f"{'':>8}" + "".join(f"{n:>20}" for n in names_x))
+for gy in range(3):
+    line = f"{names_y[gy]:>8}"
+    for gx in range(3):
+        cell = grid.get((gy, gx), [])
+        ok = [float(r["corrected_error_px"]) for r in cell if r["learned"] == "True"]
+        bad = sum(r["reason"] == "error too big" for r in cell)
+        line += f"{med(ok) + f' / {len(cell)}' + (f' ({bad} too big)' if bad else ''):>20}"
+    print(line)
+
+# ---------- 3. Tune the learning settings on your own data ----------
+# Leave-one-out: hide each lesson, predict it from all the others, measure the miss.
+print("\n3) TUNING LEARN_SIGMA / LEARN_PRIOR (leave-one-out test on your lessons)")
+samples = np.array(json.loads(LEARN_FILE.read_text())) if LEARN_FILE.exists() else np.empty((0, 4))
+if len(samples) < 10:
+    print("   need at least 10 lessons")
+else:
+    pos, err = samples[:, :2], samples[:, 2:]
+    d2 = ((pos[:, None, :] - pos[None, :, :]) ** 2).sum(-1)
+    baseline = np.median(np.linalg.norm(err, axis=1))
+    print(f"   no correction at all: {baseline:.0f}px")
+
+    results = []
+    for sigma in (75, 100, 150, 200, 300, 400):
+        w_base = np.exp(-d2 / (2 * sigma ** 2))
+        np.fill_diagonal(w_base, 0)  # can't use a lesson to predict itself
+        for prior in (0.25, 0.5, 1.0, 2.0, 4.0):
+            pred = (w_base @ err) / (w_base.sum(1, keepdims=True) + prior)
+            miss = np.median(np.linalg.norm(err - pred, axis=1))
+            results.append((miss, sigma, prior))
+
+    results.sort()
+    current = next(m for m, s, p in results if s == CURRENT_SIGMA and p == CURRENT_PRIOR)
+    print(f"   current settings (sigma={CURRENT_SIGMA}, prior={CURRENT_PRIOR}): {current:.0f}px")
+    print("   best settings:")
+    for miss, sigma, prior in results[:3]:
+        print(f"      LEARN_SIGMA = {sigma:<4} LEARN_PRIOR = {prior:<5} -> {miss:.0f}px")

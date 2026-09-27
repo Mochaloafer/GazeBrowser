@@ -1,0 +1,2 @@
+timestamp,model,model_modified,lessons,targets,raw_median_px,corrected_median_px,improvement_percent,raw_edges_px,corrected_edges_px,raw_inner_px,corrected_inner_px
+2026-09-26 23:18:15,gaze_model.pkl,1790488374213257500,36,13,218.63,227.53,-4.07,211.94,248.20,219.43,207.27

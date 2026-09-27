@@ -1,15 +1,16 @@
-import shutil
+import csv
+import json
+import queue
 import time
 from collections import deque
+from pathlib import Path
 
 import cv2
 import numpy as np
 import pyautogui
 from eyetrax import GazeEstimator
 from eyetrax.calibration import run_dense_grid_calibration
-from gaze_pipeline import MODEL_FILE, Pipeline, Corrector, context, load_tracker
-from lesson_store import Store
-from sklearn.utils.validation import check_is_fitted
+from eyetrax.filters import KalmanEMASmoother, make_kalman
 from pynput import mouse  # pip install pynput
 
 try:
@@ -20,12 +21,17 @@ except ImportError:
 
 
 # ================= Settings =================
-RECALIBRATE = True
+MODEL_FILE = Path("gaze_model.pkl")
+LEARN_FILE = Path("gaze_corrections.json")
+LOG_FILE = Path("gaze_log.csv")
+RECALIBRATE = False
 CAMERA_INDEX = 0
 GRID_ROWS, GRID_COLS = 5, 5
 WINDOW = "Eye Tracker"
 
 # Smoothing
+EMA_ALPHA = 0.8
+MEDIAN_WINDOW = 7
 DEAD_ZONE = 40
 GLIDE = 0.25
 SLOW_GLIDE = 0.08
@@ -49,9 +55,99 @@ QUERY_INTERVAL = 0.08
 # Blink click
 CLICK_BLINK_MIN = 0.35
 CLICK_BLINK_MAX = 1.5
+SETTLE_TIME = 0.15
 PRE_BLINK_LOOKBACK = 0.15
 
+# Learning
+LEARN_FROM_TOUCHPAD = True   # real clicks = "this is where I meant"
+LEARN_FROM_BLINK = True      # blink clicks on a locked button
+LEARN_WINDOW = 0.3           # s of gaze before the click that gets averaged
+MIN_LEARN_FRAMES = 3         # need at least this many gaze readings in that window
+LEARN_SIGMA = 200
+LEARN_PRIOR = 1.0
+LEARN_MAX_SHIFT = 400        # px; bigger = probably not looking at what you clicked
+LEARN_MAX_SAMPLES = 400
+
 pyautogui.PAUSE = 0
+
+
+# ================= Learning system =================
+class GazeCorrector:
+    """Learns how far off the tracker is in each part of the screen, from your clicks."""
+
+    def __init__(self, path):
+        self.path = path
+        self.samples = []  # each: [raw_x, raw_y, error_x, error_y]
+        if path.exists():
+            try:
+                self.samples = json.loads(path.read_text())
+            except Exception:
+                self.samples = []
+
+    def correct(self, x, y):
+        if not self.samples:
+            return x, y
+        s = np.asarray(self.samples, dtype=float)
+        dist2 = (s[:, 0] - x) ** 2 + (s[:, 1] - y) ** 2
+        w = np.exp(-dist2 / (2 * LEARN_SIGMA ** 2))
+        denom = w.sum() + LEARN_PRIOR
+        return x + (w * s[:, 2]).sum() / denom, y + (w * s[:, 3]).sum() / denom
+
+    def learn(self, raw, target):
+        ex, ey = target[0] - raw[0], target[1] - raw[1]
+        if np.hypot(ex, ey) > LEARN_MAX_SHIFT:
+            return False, "error too big"
+        self.samples.append([float(raw[0]), float(raw[1]), float(ex), float(ey)])
+        self.samples = self.samples[-LEARN_MAX_SAMPLES:]
+        self.save()
+        return True, "ok"
+
+    def undo(self):
+        if self.samples:
+            self.samples.pop()
+            self.save()
+
+    def clear(self):
+        self.samples = []
+        self.save()
+
+    def save(self):
+        self.path.write_text(json.dumps(self.samples))
+
+
+# ================= Debug log =================
+new_log = not LOG_FILE.exists()
+log_fh = LOG_FILE.open("a", newline="")
+log = csv.writer(log_fh)
+if new_log:
+    log.writerow(["time", "source", "raw_x", "raw_y", "corrected_x", "corrected_y",
+                  "target_x", "target_y", "raw_error_px", "corrected_error_px",
+                  "frames", "learned", "reason"])
+
+
+def learn_from_click(source, click_t, target):
+    """Compare where the tracker thought you looked with where you actually clicked."""
+    tx, ty = target
+    window = [h for h in history if click_t - LEARN_WINDOW <= h[0] <= click_t]
+
+    if len(window) < MIN_LEARN_FRAMES:
+        rx = ry = cx = cy = raw_err = cor_err = ""
+        learned, reason = False, "no gaze data (eyes closed / no face?)"
+    else:
+        rx = float(np.mean([h[1] for h in window]))
+        ry = float(np.mean([h[2] for h in window]))
+        cx, cy = corrector.correct(rx, ry)  # what the system predicted BEFORE this lesson
+        raw_err = round(float(np.hypot(tx - rx, ty - ry)))
+        cor_err = round(float(np.hypot(tx - cx, ty - cy)))
+        learned, reason = corrector.learn((rx, ry), (tx, ty))
+        rx, ry, cx, cy = round(rx), round(ry), round(cx), round(cy)
+
+    log.writerow([f"{click_t:.2f}", source, rx, ry, cx, cy, tx, ty,
+                  raw_err, cor_err, len(window), learned, reason])
+    log_fh.flush()
+    print(f"[{source}] target=({tx},{ty}) raw_err={raw_err}px "
+          f"corrected_err={cor_err}px learned={learned} ({reason})")
+    flash("learned" if learned else f"not learned: {reason}")
 
 
 # ================= Button detection =================
@@ -89,6 +185,7 @@ def clamp(v, lo, hi):
 
 
 # ================= Touchpad listener (runs in its own thread) =================
+touch_clicks = queue.Queue()
 last_manual_move = 0.0
 
 
@@ -102,48 +199,35 @@ def on_click(x, y, button, pressed, injected=False):
     global last_manual_move
     if pressed and not injected and button == mouse.Button.left:
         last_manual_move = time.time()
+        touch_clicks.put((time.time(), int(x), int(y)))
 
 
 # ================= Calibration =================
-if MODEL_FILE.exists() and not RECALIBRATE:
-    tracker = load_tracker(MODEL_FILE)
-else:
-    tracker = GazeEstimator(model_name="ridge")
-    temporary = MODEL_FILE.with_suffix(".pending.pkl")
-    try:
-        run_dense_grid_calibration(tracker, rows=GRID_ROWS, cols=GRID_COLS,
-                                   camera_index=CAMERA_INDEX)
-        check_is_fitted(tracker.model.scaler)
-        tracker.predict(np.zeros((1, tracker.model.scaler.n_features_in_)))
-        tracker.save_model(temporary)
-        if MODEL_FILE.exists():
-            stamp = time.strftime("%Y%m%d_%H%M%S") + f"_{time.time_ns()}"
-            shutil.copy2(MODEL_FILE, MODEL_FILE.with_name(f"gaze_model_backup_{stamp}.pkl"))
-        temporary.replace(MODEL_FILE)
-    except Exception:
-        tracker.close()
-        raise
-    finally:
-        temporary.unlink(missing_ok=True)
+tracker = GazeEstimator(model_name="ridge")
+corrector = GazeCorrector(LEARN_FILE)
 
-store = Store()
-ctx = context(MODEL_FILE, pyautogui.size())
-manifest = store.manifest()
-samples, accepted_ids, skipped_ids = store.active(ctx, manifest)
-corrector = Corrector(samples)
-pipeline = Pipeline()
-print(f"Loaded {len(accepted_ids)} accepted sessions ({len(samples)} fixations).")
-if skipped_ids:
-    print(f"Skipped {len(skipped_ids)} incompatible sessions; revalidate after calibration/settings changes.")
+if MODEL_FILE.exists() and not RECALIBRATE:
+    tracker.load_model(MODEL_FILE)
+    print(f"Loaded calibration, {len(corrector.samples)} learned corrections")
+else:
+    stamp = time.strftime("%Y%m%d_%H%M%S")
+    if MODEL_FILE.exists():
+        MODEL_FILE.rename(f"gaze_model_backup_{stamp}.pkl")
+    if LEARN_FILE.exists():
+        LEARN_FILE.rename(f"gaze_corrections_backup_{stamp}.json")
+    run_dense_grid_calibration(tracker, rows=GRID_ROWS, cols=GRID_COLS,
+                               camera_index=CAMERA_INDEX)
+    tracker.save_model(MODEL_FILE)
+    corrector.clear()
+    print(f"New calibration saved, old one backed up as gaze_model_backup_{stamp}.pkl")
+
+smoother = KalmanEMASmoother(make_kalman(process_var=5.0), ema_alpha=EMA_ALPHA)
+smoother.tune(tracker, camera_index=CAMERA_INDEX)
 
 
 # ================= Setup =================
 screen_w, screen_h = pyautogui.size()
 camera = cv2.VideoCapture(CAMERA_INDEX)
-if not camera.isOpened():
-    camera.release()
-    tracker.close()
-    raise RuntimeError("Camera could not be opened")
 camera.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 
 cv2.namedWindow(WINDOW, cv2.WINDOW_NORMAL)
@@ -153,6 +237,7 @@ cv2.setWindowProperty(WINDOW, cv2.WND_PROP_TOPMOST, 1)
 listener = mouse.Listener(on_move=on_move, on_click=on_click)
 listener.start()
 
+raw_hist = deque(maxlen=MEDIAN_WINDOW)
 history = deque()        # (time, raw_x, raw_y, cursor_x, cursor_y, locked_rect)
 cursor_x, cursor_y = map(float, pyautogui.position())
 locked = None
@@ -160,6 +245,7 @@ candidate = None
 candidate_since = 0.0
 last_query = 0.0
 blink_start = None
+reopened_at = 0.0
 paused = False
 snapping = uia is not None
 message, message_until = "", 0.0
@@ -188,7 +274,8 @@ def handle_blink_click(blink_began):
     tx, ty = center(rect)
     pyautogui.click(tx, ty)
     cursor_x, cursor_y = float(tx), float(ty)
-    flash("CLICK")
+    if LEARN_FROM_BLINK:
+        learn_from_click("blink", snap_t, (tx, ty))
 
 
 # ================= Main loop =================
@@ -201,8 +288,6 @@ try:
         now = time.time()
         features, blink = tracker.extract_features(frame)
         manual = now - last_manual_move < MANUAL_HOLD
-        raw = tracker.predict(np.array([features]))[0] if features is not None and not blink else None
-        filtered = pipeline.step(raw, now)
 
         if features is None:
             status = "no face"
@@ -221,9 +306,13 @@ try:
                 if not paused and not manual and CLICK_BLINK_MIN <= duration <= CLICK_BLINK_MAX:
                     handle_blink_click(blink_start)
                 blink_start = None
+                reopened_at = now
 
-            if filtered is not None:
-                sx, sy = filtered
+            if now - reopened_at >= SETTLE_TIME:
+                x, y = tracker.predict(np.array([features]))[0]
+                raw_hist.append((x, y))
+                mx, my = np.median(raw_hist, axis=0)
+                sx, sy = smoother.step(int(mx), int(my))
 
                 gx, gy = corrector.correct(sx, sy)
                 gx = clamp(gx, EDGE_MARGIN, screen_w - 1 - EDGE_MARGIN)
@@ -262,16 +351,22 @@ try:
                     cursor_y += (ty - cursor_y) * speed
                     pyautogui.moveTo(int(cursor_x), int(cursor_y))
 
-                # Keep recent cursor positions for pre-blink click targeting.
+                # Always record gaze, even while you use the touchpad (needed for learning)
                 history.append((now, sx, sy, cursor_x, cursor_y, locked))
                 while history and now - history[0][0] > 3.0:
                     history.popleft()
+
+        # Learn from real touchpad clicks
+        while not touch_clicks.empty():
+            click_t, click_x, click_y = touch_clicks.get()
+            if LEARN_FROM_TOUCHPAD:
+                learn_from_click("touchpad", click_t, (click_x, click_y))
 
         # Preview window
         preview = cv2.flip(frame, 1)
         lines = [
             "PAUSED" if paused else status,
-            f"accepted: {len(accepted_ids)}  snap: {'on' if snapping else 'off'}",
+            f"learned: {len(corrector.samples)}  snap: {'on' if snapping else 'off'}",
         ]
         if now < message_until:
             lines.append(message)
@@ -287,6 +382,12 @@ try:
             paused = not paused
         elif key == ord("s") and uia is not None:
             snapping, locked, candidate = not snapping, None, None
+        elif key == ord("u"):
+            corrector.undo()
+            flash("undid last lesson")
+        elif key == ord("c"):
+            corrector.clear()
+            flash("cleared all lessons")
 
         # X button: the window stops being visible once it's closed
         if cv2.getWindowProperty(WINDOW, cv2.WND_PROP_VISIBLE) < 1:
@@ -301,4 +402,5 @@ finally:
     camera.release()
     cv2.destroyAllWindows()
     tracker.close()
-    print("Closed. Accepted lessons unchanged; manage sessions with learning_manager.py.")
+    log_fh.close()
+    print(f"Closed. {len(corrector.samples)} lessons saved to {LEARN_FILE}, log in {LOG_FILE}")
