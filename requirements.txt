@@ -1,5 +1,8 @@
 eyetrax==0.4.0
 opencv-python
 pyautogui
-pynput
+SpeechRecognition
+PyAudio
+PySide6
 uiautomation; sys_platform == "win32"
+webrtcvad-wheels==2.0.14

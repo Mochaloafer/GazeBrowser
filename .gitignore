@@ -3,3 +3,6 @@ venv/
 ENV/
 env/
 **/__pycache__/
+
+build/
+dist/
