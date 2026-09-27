@@ -5,7 +5,7 @@ import speech_recognition as sr
 import threading
 from eyetrax import GazeEstimator, run_9_point_calibration
 
-'''
+
 # Settings
 SMOOTHING = 0.30
 DEAD_ZONE = 20
@@ -40,6 +40,9 @@ smooth_y = last_y
 recognizer = sr.Recognizer()
 microphone = sr.Microphone()
 
+with microphone as source:
+    recognizer.adjust_for_ambient_noise(source, duration=1)
+
 
 def speech_listener():
     while True:
@@ -49,7 +52,18 @@ def speech_listener():
 
             text = recognizer.recognize_google(audio)
 
-            pyautogui.write(text + " ")
+            if text == "stop":
+                break
+            elif text == "backspace":
+                pyautogui.press("backspace")
+            elif text == "enter":
+                pyautogui.press("enter")
+            elif text == "period":
+                pyautogui.write(".")
+            elif text == "comma":
+                pyautogui.write(",")
+            else:
+                pyautogui.write(text + " ")
 
         except:
             pass
@@ -133,33 +147,3 @@ while True:
 # Cleanup
 camera.release()
 cv2.destroyAllWindows()
-'''
-
-recognizer = sr.Recognizer()
-microphone = sr.Microphone()
-
-with microphone as source:
-    recognizer.adjust_for_ambient_noise(source, duration=1)
-
-while True:
-    try:
-        with microphone as source:
-            audio = recognizer.listen(source)
-
-        text = recognizer.recognize_google(audio)
-
-        if text == "stop":
-            break
-        elif text == "backspace":
-            pyautogui.press("backspace")
-        elif text == "enter":
-            pyautogui.press("enter")
-        elif text == "period":
-            pyautogui.write(".")
-        elif text == "comma":
-            pyautogui.write(",")
-        else:
-            pyautogui.write(text + " ")
-
-    except:
-        pass
