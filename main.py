@@ -5,7 +5,8 @@ from eyetrax import GazeEstimator, run_9_point_calibration
 
 
 # Settings
-DEAD_ZONE = 30
+SMOOTHING = 0.30
+DEAD_ZONE = 20
 DOUBLE_BLINK_TIME = 2
 
 
@@ -29,6 +30,9 @@ was_blinking = False
 # Mouse position
 last_x = screen_width // 2
 last_y = screen_height // 2
+
+smooth_x = last_x
+smooth_y = last_y
 
 
 while True:
@@ -55,13 +59,16 @@ while True:
             x = max(0, min(x, screen_width - 1))
             y = max(0, min(y, screen_height - 1))
 
-            distance = ((x - last_x) ** 2 + (y - last_y) ** 2) ** 0.5
+            smooth_x += (x - smooth_x) * SMOOTHING
+            smooth_y += (y - smooth_y) * SMOOTHING
+
+            distance = ((smooth_x - last_x) ** 2 + (smooth_y - last_y) ** 2) ** 0.5
 
             if distance > DEAD_ZONE:
-                pyautogui.moveTo(x, y)
+                pyautogui.moveTo(int(smooth_x), int(smooth_y))
 
-                last_x = x
-                last_y = y
+                last_x = smooth_x
+                last_y = smooth_y
 
 
         # Detect a new blink
