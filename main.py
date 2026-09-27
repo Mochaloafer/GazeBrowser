@@ -1,6 +1,5 @@
 import cv2
 import pyautogui
-import time
 import speech_recognition as sr
 import threading
 from eyetrax import GazeEstimator, run_9_point_calibration
@@ -45,17 +44,17 @@ def speech_listener():
 
             text = recognizer.recognize_google(audio)
 
-            if text == "stop":
+            if "terminate" in text:
                 break
-            elif text == "backspace":
+            elif "backspace" in text:
                 pyautogui.press("backspace")
-            elif text == "enter":
+            elif "enter" in text:
                 pyautogui.press("enter")
-            elif text == "period":
+            elif "period" in text:
                 pyautogui.write(".")
-            elif text == "comma":
+            elif "comma" in text:
                 pyautogui.write(",")
-            elif text == "click":
+            elif "click" in text:
                 print("click")
                 pyautogui.click()
             else:
@@ -66,6 +65,7 @@ def speech_listener():
 
 voice_thread = threading.Thread(
     target=speech_listener,
+    # daemon is a background thread that ends when the main program ends
     daemon=True
 )
 
@@ -102,7 +102,7 @@ while True:
             distance = ((smooth_x - last_x) ** 2 + (smooth_y - last_y) ** 2) ** 0.5
 
             if distance > DEAD_ZONE:
-                #pyautogui.moveTo(int(smooth_x), int(smooth_y))
+                pyautogui.moveTo(int(smooth_x), int(smooth_y))
 
                 last_x = smooth_x
                 last_y = smooth_y
