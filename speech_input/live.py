@@ -1,3 +1,4 @@
+"""
 import html
 import sys
 
@@ -30,7 +31,7 @@ class DictationWindow(QWidget):
         self.worker.failed.connect(self.show_error)
         self.worker.finished.connect(self.recording_finished)
 
-        self.setStyleSheet("""
+        self.setStyleSheet(""""""
             QWidget {
                 background: #252B29;
                 color: #EDF5F0;
@@ -55,7 +56,7 @@ class DictationWindow(QWidget):
                 background: #404B45;
                 color: #8E9D94;
             }
-        """)
+        """""")
 
         layout = QVBoxLayout(self)
         layout.setSpacing(12)
@@ -188,3 +189,4 @@ if __name__ == "__main__":
     window = DictationWindow()
     window.show()
     sys.exit(app.exec())
+"""

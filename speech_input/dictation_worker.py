@@ -1,3 +1,4 @@
+"""
 import threading
 import time
 
@@ -157,3 +158,4 @@ class DictationWorker(QThread):
 
         except Exception as error:
             self.failed.emit(f"{type(error).__name__}: {error}")
+"""

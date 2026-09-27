@@ -1,13 +1,9 @@
 eyetrax==0.4.0
 opencv-python
 pyautogui
-<<<<<<< HEAD
 SpeechRecognition
-PyAudio
+PyAudio 
 PySide6
 uiautomation; sys_platform == "win32"
 webrtcvad-wheels==2.0.14
-=======
-pynput
-uiautomation; sys_platform == "win32"
->>>>>>> branch5
+pynput  

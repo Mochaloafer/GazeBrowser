@@ -1,4 +1,5 @@
 import ctypes
+from contextlib import nullcontext
 import math
 import time
 
@@ -36,9 +37,6 @@ class AssistantController(QObject):
         self.gaze_valid = False
         self.last_gaze_time = 0.0
 
-        self.width, self.height = pyautogui.size()
-        self.x, self.y = pyautogui.position()
-        self.last_x, self.last_y = self.x, self.y
 
         # Speech notifications.
         speech.began.connect(self.begin_phrase)
@@ -55,6 +53,8 @@ class AssistantController(QObject):
         if gaze is not None:
             gaze.sample.connect(self.gaze_sample)
             gaze.failed.connect(self.failure)
+            gaze.pause_requested.connect(self.toggle_pause)
+            gaze.quit_requested.connect(self.shutdown)
 
         # Overlay controls.
         window.quit_requested.connect(self.shutdown)
@@ -169,8 +169,10 @@ class AssistantController(QObject):
         if self.closing:
             return
 
-        self.release_cursor()
         self.paused = not self.paused
+        if self.gaze is not None:
+            self.gaze.set_paused(self.paused)
+        self.release_cursor()
         self.epoch += 1
 
         self.window.set_mode(self.mode, self.paused)
@@ -184,10 +186,12 @@ class AssistantController(QObject):
 
     def hold_cursor(self, phrase_id):
         """Remember the target and suspend gaze-driven movement."""
-        self.release_cursor()
-
+        # Freeze the movement owner before reading the actual pointer position.
+        self.held_position = (
+            self.gaze.hold_cursor()
+            if self.gaze is not None else tuple(pyautogui.position())
+        )
         self.held_phrase = phrase_id
-        self.held_position = tuple(pyautogui.position())
         self.hold_deadline = time.monotonic() + 10.0
 
         self.window.notice.setText(
@@ -205,6 +209,8 @@ class AssistantController(QObject):
         self.held_phrase = None
         self.held_position = None
         self.hold_deadline = 0.0
+        if self.gaze is not None:
+            self.gaze.release_cursor()
 
     def begin_phrase(self, phrase_id):
         if self.closing:
@@ -251,12 +257,12 @@ class AssistantController(QObject):
         )
 
     def final(self, phrase_id, text, last_voice_time):
-        try:
-            self.process_final(
-                phrase_id, text, last_voice_time
-            )
-        finally:
-            self.release_cursor(phrase_id)
+        guard = self.gaze.action_guard() if self.gaze is not None else nullcontext()
+        with guard:
+            try:
+                self.process_final(phrase_id, text, last_voice_time)
+            finally:
+                self.release_cursor(phrase_id)
 
     def process_final(self, phrase_id, text, last_voice_time):
         context = self.phrases.pop(phrase_id, None)
@@ -377,10 +383,10 @@ class AssistantController(QObject):
                     # No pending draft: delete from the focused field.
                     self.actions.delete_word()
 
-            elif action in ("dictate", "search", "finish_typing"):
+            elif action in ("dictate", "search", "submit", "finish_typing"):
                 self.actions.insert(prefix)
 
-                if action == "search":
+                if action in ("search", "submit"):
                     self.actions.enter()
                     self.set_mode("command")
 
@@ -423,43 +429,15 @@ class AssistantController(QObject):
             valid and math.isfinite(x) and math.isfinite(y)
         )
 
-        if (
-            self.closing
-            or self.paused
-            or self.held_phrase is not None
-            or not self.gaze_valid
-            or time.monotonic() - timestamp > 0.3
-        ):
-            return
-
-        x = max(0, min(x, self.width - 1))
-        y = max(0, min(y, self.height - 1))
-
-        self.x += (x - self.x) * 0.30
-        self.y += (y - self.y) * 0.30
-
-        distance = (
-            (self.x - self.last_x) ** 2
-            + (self.y - self.last_y) ** 2
-        ) ** 0.5
-
-        if distance > 20:
-            try:
-                self.actions.move(self.x, self.y)
-                self.last_x, self.last_y = self.x, self.y
-
-            except pyautogui.FailSafeException:
-                self.toggle_pause()
-
-            except Exception as error:
-                self.failure(f"Mouse: {error}")
+        # The teammate's GazeWorker already moves the cursor.
+        # This signal supplies freshness/validity for speech action checks only.
 
     def failure(self, message):
-        self.release_cursor()
         self.gaze_valid = False
-
         if not self.paused:
             self.toggle_pause()
+        else:
+            self.release_cursor()
 
         self.window.notice.setText(
             message + " — restart after fixing"
@@ -470,6 +448,8 @@ class AssistantController(QObject):
             return
 
         self.closing = True
+        if self.gaze is not None:
+            self.gaze.stop()
         self.release_cursor()
         self.epoch += 1
 

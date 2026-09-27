@@ -1,304 +1,75 @@
-import shutil
-import time
-from collections import deque
+"""Windows entry point: python -m assistant_app from the repository root."""
 
-import cv2
-import numpy as np
-import pyautogui
-from eyetrax import GazeEstimator
-from eyetrax.calibration import run_dense_grid_calibration
-from gaze_pipeline import MODEL_FILE, Pipeline, Corrector, context, load_tracker
-from lesson_store import Store
-from sklearn.utils.validation import check_is_fitted
-from pynput import mouse  # pip install pynput
-
-try:
-    import uiautomation as uia  # Windows only: pip install uiautomation
-except ImportError:
-    uia = None
-    print("uiautomation not installed -> button snapping disabled")
+import argparse
+import sys
 
 
-# ================= Settings =================
-RECALIBRATE = True
-CAMERA_INDEX = 0
-GRID_ROWS, GRID_COLS = 5, 5
-WINDOW = "Eye Tracker"
+def run():
+    if sys.platform != "win32":
+        raise SystemExit("This integration is for Windows.")
 
-# Smoothing
-DEAD_ZONE = 40
-GLIDE = 0.25
-SLOW_GLIDE = 0.08
-EDGE_MARGIN = 5
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--no-gaze", action="store_true")
+    parser.add_argument("--model", default="base.en")
+    args = parser.parse_args()
 
-# Touchpad takeover
-MANUAL_HOLD = 1.0            # s the eyes stay hands-off after you touch the touchpad
+    from PySide6.QtWidgets import QApplication
+    from .audio_permission import ensure_microphone_consent
 
-# Button snapping
-CLICKABLE_TYPES = {
-    "ButtonControl", "HyperlinkControl", "MenuItemControl", "TabItemControl",
-    "ListItemControl", "CheckBoxControl", "RadioButtonControl", "ComboBoxControl",
-    "EditControl", "SplitButtonControl", "TreeItemControl",
-}
-MIN_TARGET = 8
-MAX_TARGET_W, MAX_TARGET_H = 600, 200
-LOCK_DWELL = 0.15
-STICKY_PAD = 40
-QUERY_INTERVAL = 0.08
+    app = QApplication(sys.argv[:1])
+    app.setQuitOnLastWindowClosed(False)
+    if not ensure_microphone_consent():
+        print("Microphone consent not granted. Exiting.")
+        return 0
 
-# Blink click
-CLICK_BLINK_MIN = 0.35
-CLICK_BLINK_MAX = 1.5
-PRE_BLINK_LOOKBACK = 0.15
+    # Import before calibration so a missing assistant dependency fails early.
+    from .controller import AssistantController
+    from .desktop import FocusWorker
+    from .speech import SpeechWorker
+    from .window import AssistantWindow
 
-pyautogui.PAUSE = 0
+    tracker = None
+    gaze = None
+    if not args.no_gaze:
+        import cv2
+        # These import the teammate's real gaze_pipeline and lesson_store.
+        # Missing modules must be restored from their branch, not substituted.
+        from .teammate_gaze import calibrate_tracker
+        from .gaze import GazeWorker
 
+        print("Running teammate's dense-grid calibration. Assistant opens afterward.")
+        try:
+            tracker = calibrate_tracker()
+        finally:
+            cv2.destroyAllWindows()
 
-# ================= Button detection =================
-def find_target(x, y):
-    if uia is None:
-        return None
+    workers = []
+    gaze_started = False
     try:
-        ctrl = uia.ControlFromPoint(int(x), int(y))
-        for _ in range(4):
-            if ctrl is None:
-                return None
-            if ctrl.ControlTypeName in CLICKABLE_TYPES:
-                r = ctrl.BoundingRectangle
-                w, h = r.width(), r.height()
-                if MIN_TARGET <= w <= MAX_TARGET_W and MIN_TARGET <= h <= MAX_TARGET_H:
-                    return (r.left, r.top, r.right, r.bottom)
-                return None
-            ctrl = ctrl.GetParentControl()
-    except Exception:
-        pass
-    return None
-
-
-def inside(rect, x, y, pad=0):
-    left, top, right, bottom = rect
-    return left - pad <= x < right + pad and top - pad <= y < bottom + pad
-
-
-def center(rect):
-    return (rect[0] + rect[2]) // 2, (rect[1] + rect[3]) // 2
-
-
-def clamp(v, lo, hi):
-    return max(lo, min(v, hi))
-
-
-# ================= Touchpad listener (runs in its own thread) =================
-last_manual_move = 0.0
-
-
-def on_move(x, y, injected=False):
-    global last_manual_move
-    if not injected:  # injected = moved by our own pyautogui calls -> ignore
-        last_manual_move = time.time()
-
-
-def on_click(x, y, button, pressed, injected=False):
-    global last_manual_move
-    if pressed and not injected and button == mouse.Button.left:
-        last_manual_move = time.time()
-
-
-# ================= Calibration =================
-if MODEL_FILE.exists() and not RECALIBRATE:
-    tracker = load_tracker(MODEL_FILE)
-else:
-    tracker = GazeEstimator(model_name="ridge")
-    temporary = MODEL_FILE.with_suffix(".pending.pkl")
-    try:
-        run_dense_grid_calibration(tracker, rows=GRID_ROWS, cols=GRID_COLS,
-                                   camera_index=CAMERA_INDEX)
-        check_is_fitted(tracker.model.scaler)
-        tracker.predict(np.zeros((1, tracker.model.scaler.n_features_in_)))
-        tracker.save_model(temporary)
-        if MODEL_FILE.exists():
-            stamp = time.strftime("%Y%m%d_%H%M%S") + f"_{time.time_ns()}"
-            shutil.copy2(MODEL_FILE, MODEL_FILE.with_name(f"gaze_model_backup_{stamp}.pkl"))
-        temporary.replace(MODEL_FILE)
-    except Exception:
-        tracker.close()
-        raise
+        window = AssistantWindow()
+        speech = SpeechWorker(args.model)
+        speech.failed.connect(lambda message: print(f"[Speech error] {message}"))
+        focus = FocusWorker()
+        gaze = GazeWorker(tracker) if tracker is not None else None
+        controller = AssistantController(window, speech, focus, gaze)
+        workers = controller.workers()
+        window.show()
+        focus.start()
+        speech.start()
+        if gaze is not None:
+            gaze.start()
+            gaze_started = True
+        return app.exec()
     finally:
-        temporary.unlink(missing_ok=True)
-
-store = Store()
-ctx = context(MODEL_FILE, pyautogui.size())
-manifest = store.manifest()
-samples, accepted_ids, skipped_ids = store.active(ctx, manifest)
-corrector = Corrector(samples)
-pipeline = Pipeline()
-print(f"Loaded {len(accepted_ids)} accepted sessions ({len(samples)} fixations).")
-if skipped_ids:
-    print(f"Skipped {len(skipped_ids)} incompatible sessions; revalidate after calibration/settings changes.")
+        # Also cover unexpected event-loop exit. Never destroy a running QThread.
+        for worker in workers:
+            worker.stop()
+        for worker in workers:
+            worker.wait()
+        # A started GazeWorker closes its tracker in its own finally block.
+        if tracker is not None and not gaze_started:
+            tracker.close()
 
 
-# ================= Setup =================
-screen_w, screen_h = pyautogui.size()
-camera = cv2.VideoCapture(CAMERA_INDEX)
-if not camera.isOpened():
-    camera.release()
-    tracker.close()
-    raise RuntimeError("Camera could not be opened")
-camera.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-
-cv2.namedWindow(WINDOW, cv2.WINDOW_NORMAL)
-cv2.resizeWindow(WINDOW, 320, 240)
-cv2.setWindowProperty(WINDOW, cv2.WND_PROP_TOPMOST, 1)
-
-listener = mouse.Listener(on_move=on_move, on_click=on_click)
-listener.start()
-
-history = deque()        # (time, raw_x, raw_y, cursor_x, cursor_y, locked_rect)
-cursor_x, cursor_y = map(float, pyautogui.position())
-locked = None
-candidate = None
-candidate_since = 0.0
-last_query = 0.0
-blink_start = None
-paused = False
-snapping = uia is not None
-message, message_until = "", 0.0
-
-
-def flash(text):
-    global message, message_until
-    message, message_until = text, time.time() + 1.5
-
-
-def handle_blink_click(blink_began):
-    global cursor_x, cursor_y
-    snap_t = blink_began - PRE_BLINK_LOOKBACK
-    before = [h for h in history if h[0] <= snap_t]
-    if not before:
-        pyautogui.click(int(cursor_x), int(cursor_y))
-        return
-
-    _, _, _, cx, cy, rect = before[-1]
-    if rect is None:
-        pyautogui.click(int(cx), int(cy))
-        cursor_x, cursor_y = cx, cy
-        flash("CLICK")
-        return
-
-    tx, ty = center(rect)
-    pyautogui.click(tx, ty)
-    cursor_x, cursor_y = float(tx), float(ty)
-    flash("CLICK")
-
-
-# ================= Main loop =================
-try:
-    while True:
-        ok, frame = camera.read()
-        if not ok:
-            break
-
-        now = time.time()
-        features, blink = tracker.extract_features(frame)
-        manual = now - last_manual_move < MANUAL_HOLD
-        raw = tracker.predict(np.array([features]))[0] if features is not None and not blink else None
-        filtered = pipeline.step(raw, now)
-
-        if features is None:
-            status = "no face"
-            blink_start = None
-
-        elif blink:
-            status = "eyes closed"
-            if blink_start is None:
-                blink_start = now
-
-        else:
-            status = "TOUCHPAD" if manual else ("LOCKED" if locked else "tracking")
-
-            if blink_start is not None:
-                duration = now - blink_start
-                if not paused and not manual and CLICK_BLINK_MIN <= duration <= CLICK_BLINK_MAX:
-                    handle_blink_click(blink_start)
-                blink_start = None
-
-            if filtered is not None:
-                sx, sy = filtered
-
-                gx, gy = corrector.correct(sx, sy)
-                gx = clamp(gx, EDGE_MARGIN, screen_w - 1 - EDGE_MARGIN)
-                gy = clamp(gy, EDGE_MARGIN, screen_h - 1 - EDGE_MARGIN)
-
-                if locked and not inside(locked, gx, gy, STICKY_PAD):
-                    locked = None
-                if candidate and not inside(candidate, gx, gy):
-                    candidate = None
-                if snapping and locked is None and now - last_query >= QUERY_INTERVAL:
-                    last_query = now
-                    rect = find_target(gx, gy)
-                    if rect is None:
-                        candidate = None
-                    elif rect != candidate:
-                        candidate, candidate_since = rect, now
-                    elif now - candidate_since >= LOCK_DWELL:
-                        locked, candidate = rect, None
-
-                if locked:
-                    tx, ty = center(locked)
-                    speed, should_move = GLIDE, True
-                elif candidate:
-                    tx, ty = gx, gy
-                    speed, should_move = SLOW_GLIDE, True
-                else:
-                    tx, ty = gx, gy
-                    speed = GLIDE
-                    should_move = np.hypot(tx - cursor_x, ty - cursor_y) > DEAD_ZONE
-
-                if manual:
-                    # You're driving: keep our position in sync, don't fight you
-                    cursor_x, cursor_y = map(float, pyautogui.position())
-                elif not paused and should_move:
-                    cursor_x += (tx - cursor_x) * speed
-                    cursor_y += (ty - cursor_y) * speed
-                    pyautogui.moveTo(int(cursor_x), int(cursor_y))
-
-                # Keep recent cursor positions for pre-blink click targeting.
-                history.append((now, sx, sy, cursor_x, cursor_y, locked))
-                while history and now - history[0][0] > 3.0:
-                    history.popleft()
-
-        # Preview window
-        preview = cv2.flip(frame, 1)
-        lines = [
-            "PAUSED" if paused else status,
-            f"accepted: {len(accepted_ids)}  snap: {'on' if snapping else 'off'}",
-        ]
-        if now < message_until:
-            lines.append(message)
-        for i, text in enumerate(lines):
-            cv2.putText(preview, text, (10, 30 + 30 * i), cv2.FONT_HERSHEY_SIMPLEX,
-                        0.6, (0, 0, 255) if paused else (0, 255, 0), 2)
-        cv2.imshow(WINDOW, preview)
-
-        key = cv2.waitKey(1) & 0xFF
-        if key == ord("q"):
-            break
-        elif key == ord("p"):
-            paused = not paused
-        elif key == ord("s") and uia is not None:
-            snapping, locked, candidate = not snapping, None, None
-
-        # X button: the window stops being visible once it's closed
-        if cv2.getWindowProperty(WINDOW, cv2.WND_PROP_VISIBLE) < 1:
-            break
-
-except KeyboardInterrupt:
-    print("Stopped with Ctrl+C")
-except pyautogui.FailSafeException:
-    print("Stopped by PyAutoGUI fail-safe (mouse in a screen corner)")
-finally:
-    listener.stop()
-    camera.release()
-    cv2.destroyAllWindows()
-    tracker.close()
-    print("Closed. Accepted lessons unchanged; manage sessions with learning_manager.py.")
+if __name__ == "__main__":
+    sys.exit(run())
