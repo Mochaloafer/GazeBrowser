@@ -138,6 +138,9 @@ cv2.destroyAllWindows()
 recognizer = sr.Recognizer()
 microphone = sr.Microphone()
 
+with microphone as source:
+    recognizer.adjust_for_ambient_noise(source, duration=1)
+
 while True:
     try:
         with microphone as source:
