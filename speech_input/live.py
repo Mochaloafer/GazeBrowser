@@ -137,7 +137,7 @@ class DictationWindow(QWidget):
             f'<span style="color:#EDF5F0;">{stable}</span> '
             f'<span style="color:#9BACA1;">{tentative}</span>'
         )
-)
+
 
         self.previous_words = words
         self.detail_label.setText(
